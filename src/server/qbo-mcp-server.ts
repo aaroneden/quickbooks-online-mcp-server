@@ -3,6 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 export class QuickbooksMCPServer {
   private static instance: McpServer | null = null;
 
+  /* istanbul ignore next -- private, exists only to force static-only use */
   private constructor() {}
 
   /**

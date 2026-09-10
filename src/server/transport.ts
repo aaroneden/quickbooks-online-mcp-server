@@ -147,6 +147,7 @@ export function createMcpRequestHandler(options: {
   createServer: () => ConnectableServer;
   /** Read lazily: the allowlist is only known once the port is bound. */
   getAllowedHosts: () => string[] | undefined;
+  /** Used only when a request omits Host, which HTTP/1.1 forbids. */
   fallbackHost: string;
   /** Injectable so the partially-written-response paths can be tested. */
   createTransport?: (allowedHosts: string[] | undefined) => RequestTransport;
@@ -166,8 +167,6 @@ export function createMcpRequestHandler(options: {
       // port makes the URL constructor throw, and an unhandled rejection here
       // would terminate the daemon that every session depends on -- reachable
       // by any local process, before the SDK's own host check ever runs.
-      let transport: RequestTransport | undefined;
-      let server: ConnectableServer | undefined;
       try {
         const url = new URL(req.url ?? "/", `http://${req.headers.host ?? options.fallbackHost}`);
         if (url.pathname !== MCP_PATH) {
@@ -185,16 +184,17 @@ export function createMcpRequestHandler(options: {
 
         const body = await readBody(req);
 
-        server = options.createServer();
-        transport = buildTransport(options.getAllowedHosts());
+        const server = options.createServer();
+        const transport = buildTransport(options.getAllowedHosts());
         // Cleanup is bound to the response, not to handleRequest returning.
         // handleRequest resolves once the request is dispatched; the reply is
-        // written later when the server answers, so closing here truncates it.
-        const perRequestTransport = transport;
-        const perRequestServer = server;
+        // written later when the server answers, so closing there truncates it.
+        // "close" fires on every outcome -- normal end, client abort, and the
+        // res.destroy() in the catch below -- so this is the single release
+        // point for the per-request objects.
         res.on("close", () => {
-          void perRequestTransport.close().catch(() => undefined);
-          void perRequestServer.close?.()?.catch(() => undefined);
+          void transport.close().catch(() => undefined);
+          void server.close?.()?.catch(() => undefined);
         });
 
         await server.connect(transport);
@@ -206,13 +206,9 @@ export function createMcpRequestHandler(options: {
             JSON.stringify({ error: error instanceof Error ? error.message : String(error) }),
           );
         } else {
+          // Destroying emits "close", so the listener above releases the
+          // per-request objects; doing it here too would close them twice.
           res.destroy();
-        }
-        // If the request failed before the response was wired up, nothing will
-        // emit "close" for it, so release the objects here instead.
-        if (transport && !res.writableEnded) {
-          await transport.close().catch(() => undefined);
-          await server?.close?.()?.catch(() => undefined);
         }
       }
     })();
@@ -230,7 +226,8 @@ export async function connectStreamableHttp(
     createMcpRequestHandler({
       createServer: createMcpServer,
       getAllowedHosts: () => allowedHosts,
-      fallbackHost: host,
+      // A bare IPv6 literal has to be bracketed or the fallback URL will not parse.
+      fallbackHost: host.includes(":") && !host.startsWith("[") ? `[${host}]` : host,
     }),
   );
 

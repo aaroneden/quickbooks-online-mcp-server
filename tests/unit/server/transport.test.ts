@@ -83,6 +83,18 @@ async function rpc(port: number, body: unknown, headers: Record<string, string> 
   return { status: res.status, text };
 }
 
+/** Run with the module's own env vars cleared, then restore them. */
+async function withCleanEnv<T>(fn: () => T | Promise<T>): Promise<T> {
+  const names = ["MCP_TRANSPORT", "MCP_HOST", "MCP_PORT", "MCP_ALLOWED_HOSTS"];
+  const saved = new Map(names.map((n) => [n, process.env[n]]));
+  for (const n of names) delete process.env[n];
+  try {
+    return await fn();
+  } finally {
+    for (const [n, v] of saved) if (v !== undefined) process.env[n] = v;
+  }
+}
+
 const callWhoami = (id: number, caller: string) => ({
   jsonrpc: "2.0",
   id,
@@ -104,8 +116,10 @@ describe("resolveTransportMode", () => {
     expect(resolveTransportMode({ MCP_TRANSPORT: "STREAMABLE-HTTP" })).toBe("stdio");
   });
 
-  it("reads process.env when no environment is supplied", () => {
-    expect(resolveTransportMode()).toBe("stdio");
+  it("reads process.env when no environment is supplied", async () => {
+    // The operator of this daemon exports these very names, so the test has to
+    // clear them rather than assume a clean shell.
+    await withCleanEnv(() => expect(resolveTransportMode()).toBe("stdio"));
   });
 });
 
@@ -132,8 +146,8 @@ describe("resolveBindAddress", () => {
     },
   );
 
-  it("reads process.env when no environment is supplied", () => {
-    expect(resolveBindAddress().host).toBe("127.0.0.1");
+  it("reads process.env when no environment is supplied", async () => {
+    await withCleanEnv(() => expect(resolveBindAddress().host).toBe("127.0.0.1"));
   });
 });
 
@@ -152,9 +166,11 @@ describe("resolveAllowedHosts", () => {
     expect(resolveAllowedHosts("0.0.0.0", 8933, {})).toBeUndefined();
   });
 
-  it("reads process.env when no environment is supplied", () => {
-    expect(resolveAllowedHosts("127.0.0.1", 8933)).toEqual(
-      expect.arrayContaining(["127.0.0.1:8933"]),
+  it("reads process.env when no environment is supplied", async () => {
+    await withCleanEnv(() =>
+      expect(resolveAllowedHosts("127.0.0.1", 8933)).toEqual(
+        expect.arrayContaining(["127.0.0.1:8933"]),
+      ),
     );
   });
 
@@ -279,6 +295,10 @@ describe("streamable-http against the real SDK", () => {
         body: huge,
       }),
     ).rejects.toThrow();
+
+    // The connection is destroyed mid-upload; the listener must survive it.
+    const after = await rpc(handle.port, callWhoami(1, "after-oversize"));
+    expect(after.text).toContain("hello after-oversize");
   });
 
   it("rejects a Host header outside the allowlist", async () => {
@@ -349,8 +369,10 @@ describe("failure after the response has started", () => {
       () => "",
     );
 
-    expect(closed.count).toBeGreaterThan(0);
-    expect(serverClose).toHaveBeenCalled();
+    // Exactly once: res.destroy() emits "close", so a second release
+    // path here would close the same objects twice.
+    expect(closed.count).toBe(1);
+    expect(serverClose).toHaveBeenCalledTimes(1);
     await new Promise<void>((r) => http.close(() => r()));
   });
 });
@@ -389,6 +411,8 @@ describe("bind addresses without an allowlist", () => {
 
   it("reads process.env when no environment is supplied", async () => {
     const previous = process.env.MCP_PORT;
+    const savedHost = process.env.MCP_HOST;
+    delete process.env.MCP_HOST;
     process.env.MCP_PORT = await freePort();
     try {
       const handle = await connectStreamableHttp(buildServer);
@@ -397,6 +421,7 @@ describe("bind addresses without an allowlist", () => {
     } finally {
       if (previous === undefined) delete process.env.MCP_PORT;
       else process.env.MCP_PORT = previous;
+      if (savedHost !== undefined) process.env.MCP_HOST = savedHost;
     }
   });
 });
@@ -493,6 +518,34 @@ describe("cleanup failures never reach the process", () => {
       expect(closes).toEqual(expect.arrayContaining(["transport", "server"]));
     } finally {
       await new Promise<void>((r) => http.close(() => r()));
+    }
+  });
+});
+
+
+describe("IPv6 bind address", () => {
+  it("brackets a bare IPv6 literal so the fallback URL parses", async () => {
+    // Unbracketed, "http://::1" is not a valid URL, so a request that omits the
+    // Host header would 400 instead of routing normally.
+    const handle = await connectStreamableHttp(buildServer, {
+      MCP_HOST: "::1",
+      MCP_PORT: await freePort(),
+    });
+
+    try {
+      const res = await fetch(`http://[::1]:${handle.port}/mcp`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+        },
+        body: JSON.stringify(callWhoami(1, "sixer")),
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain("hello sixer");
+    } finally {
+      await handle.close();
     }
   });
 });
