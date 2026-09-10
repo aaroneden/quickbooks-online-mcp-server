@@ -410,19 +410,12 @@ describe("bind addresses without an allowlist", () => {
   });
 
   it("reads process.env when no environment is supplied", async () => {
-    const previous = process.env.MCP_PORT;
-    const savedHost = process.env.MCP_HOST;
-    delete process.env.MCP_HOST;
-    process.env.MCP_PORT = await freePort();
-    try {
+    await withCleanEnv(async () => {
+      process.env.MCP_PORT = await freePort();
       const handle = await connectStreamableHttp(buildServer);
       expect(handle.host).toBe("127.0.0.1");
       await handle.close();
-    } finally {
-      if (previous === undefined) delete process.env.MCP_PORT;
-      else process.env.MCP_PORT = previous;
-      if (savedHost !== undefined) process.env.MCP_HOST = savedHost;
-    }
+    });
   });
 });
 
@@ -546,6 +539,40 @@ describe("IPv6 bind address", () => {
       expect(await res.text()).toContain("hello sixer");
     } finally {
       await handle.close();
+    }
+  });
+});
+
+
+describe("construction failure releases what was already built", () => {
+  it("closes the server when the transport constructor throws", async () => {
+    // The server is built first, so a throwing transport factory used to leave
+    // it unreleased -- the one path with zero releases rather than exactly one.
+    const serverClose = jest.fn(async () => undefined);
+    const handler = createMcpRequestHandler({
+      createServer: () => ({ connect: async () => undefined, close: serverClose }),
+      getAllowedHosts: () => undefined,
+      fallbackHost: "127.0.0.1:1",
+      createTransport: () => {
+        throw new Error("transport construction failed");
+      },
+    });
+
+    const http = createHttpServer(handler);
+    await new Promise<void>((r) => http.listen(0, "127.0.0.1", () => r()));
+    const port = (http.address() as { port: number }).port;
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(serverClose).toHaveBeenCalledTimes(1);
+    } finally {
+      await new Promise<void>((r) => http.close(() => r()));
     }
   });
 });

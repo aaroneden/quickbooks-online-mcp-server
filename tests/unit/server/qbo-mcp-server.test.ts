@@ -4,7 +4,7 @@
  * the process-wide singleton.
  *
  * Note: tool registration itself is deliberately NOT imported here. Pulling in
- * register-tools.ts drags all 142 tool modules into the coverage set and drops
+ * register-tools.ts drags all 139 registered tool modules into the coverage set and drops
  * the reported global figure from 100% to ~62%, which is the honest number --
  * jest only counts files something imports. Flagged in the PR rather than
  * papered over or silently reconfigured.

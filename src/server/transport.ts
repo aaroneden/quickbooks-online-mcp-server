@@ -185,7 +185,17 @@ export function createMcpRequestHandler(options: {
         const body = await readBody(req);
 
         const server = options.createServer();
-        const transport = buildTransport(options.getAllowedHosts());
+        // The server exists before the transport does, and the "close" listener
+        // that releases both is only attached once both are built. If the
+        // transport constructor throws in that window, nothing else will ever
+        // release the server, so do it here.
+        let transport: RequestTransport;
+        try {
+          transport = buildTransport(options.getAllowedHosts());
+        } catch (error) {
+          await server.close?.();
+          throw error;
+        }
         // Cleanup is bound to the response, not to handleRequest returning.
         // handleRequest resolves once the request is dispatched; the reply is
         // written later when the server answers, so closing there truncates it.
