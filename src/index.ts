@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   connectStdio,
   connectStreamableHttp,
@@ -201,9 +202,13 @@ import { GetAgedPayablesTool } from "./tools/get-aged-payables.tool.js";
 import { GetVendorExpensesTool } from "./tools/get-vendor-expenses.tool.js";
 import { GetVendorBalanceTool } from "./tools/get-vendor-balance.tool.js";
 
-const main = async () => {
-  // Create an MCP server
-  const server = QuickbooksMCPServer.GetServer();
+/**
+ * Register every QuickBooks tool on a server instance.
+ *
+ * Exported because the streamable-http transport builds a fresh server per
+ * request rather than sharing one; see src/server/transport.ts.
+ */
+export const registerAllTools = (server: McpServer): void => {
   // Add tools for customers
   RegisterTool(server, CreateCustomerTool);
   RegisterTool(server, GetCustomerTool);
@@ -422,13 +427,23 @@ const main = async () => {
   RegisterTool(server, GetVendorExpensesTool);
   RegisterTool(server, GetVendorBalanceTool);
 
-  // stdio spawns one server process per client; streamable-http runs once and
-  // is shared by every session. See ./server/transport.ts.
+};
+
+const main = async () => {
+  // stdio keeps a single process-wide server: one client, one process.
+  // streamable-http builds a server per request instead, because the SDK routes
+  // responses by the client's JSON-RPC id and concurrent clients reuse ids.
   if (resolveTransportMode() === "streamable-http") {
-    const { host, port } = await connectStreamableHttp(server);
+    const { host, port } = await connectStreamableHttp(() => {
+      const perRequest = QuickbooksMCPServer.CreateServer();
+      registerAllTools(perRequest);
+      return perRequest;
+    });
     // stdout carries the MCP protocol under stdio, so log to stderr only.
     console.error(`QuickBooks MCP server listening on http://${host}:${port}/mcp`);
   } else {
+    const server = QuickbooksMCPServer.GetServer();
+    registerAllTools(server);
     await connectStdio(server);
   }
 };
