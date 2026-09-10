@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import {
+  connectStdio,
+  connectStreamableHttp,
+  resolveTransportMode,
+} from "./server/transport.js";
 import { QuickbooksMCPServer } from "./server/qbo-mcp-server.js";
 // import { ListInvoicesTool } from "./tools/list-invoices.tool.js";
 // import { CreateCustomerTool } from "./tools/create-customer.tool.js";
@@ -418,9 +422,15 @@ const main = async () => {
   RegisterTool(server, GetVendorExpensesTool);
   RegisterTool(server, GetVendorBalanceTool);
 
-  // Start receiving messages on stdin and sending messages on stdout
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  // stdio spawns one server process per client; streamable-http runs once and
+  // is shared by every session. See ./server/transport.ts.
+  if (resolveTransportMode() === "streamable-http") {
+    const { host, port } = await connectStreamableHttp(server);
+    // stdout carries the MCP protocol under stdio, so log to stderr only.
+    console.error(`QuickBooks MCP server listening on http://${host}:${port}/mcp`);
+  } else {
+    await connectStdio(server);
+  }
 };
 
 main().catch((error) => {
