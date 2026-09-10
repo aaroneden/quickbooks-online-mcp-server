@@ -106,6 +106,40 @@ Set any of the `DISABLE_*` flags to `"true"` to prevent that category of tools f
 
 ---
 
+## Transport modes
+
+The server speaks **stdio** by default: the client spawns it and talks over the
+pipe. That is a 1:1 relationship, so a host that opens many sessions runs one
+server process per session.
+
+Set `MCP_TRANSPORT=streamable-http` to run it once as a shared HTTP daemon
+instead. A server and transport are built per request, which is what keeps
+concurrent clients isolated: the MCP SDK routes replies by the client's own
+JSON-RPC request id, and every client numbers from 1, so a shared transport
+would deliver one session's response to another.
+
+```bash
+MCP_TRANSPORT=streamable-http MCP_PORT=8933 node dist/index.js
+# QuickBooks MCP server listening on http://127.0.0.1:8933/mcp
+```
+
+Point a client at it with:
+
+```json
+{ "url": "http://127.0.0.1:8933/mcp", "transport": "streamable-http" }
+```
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MCP_TRANSPORT` | `stdio` | `streamable-http` to run as a daemon. Any other value falls back to stdio rather than opening a port. |
+| `MCP_HOST` | `127.0.0.1` | Bind address. Loopback by default; this server reaches QuickBooks with your credentials, so a forgotten setting should fail closed. |
+| `MCP_PORT` | `8933` | Listen port. Must be 1-65535; a malformed or zero value is rejected at startup rather than silently binding something else. |
+| `MCP_ALLOWED_HOSTS` | derived | Comma-separated `Host` values accepted by DNS-rebinding protection. Only needed when `MCP_HOST` is not loopback, where an allowlist derived from the bind address could not match any real request. |
+
+Binding a non-loopback address disables DNS-rebinding protection unless
+`MCP_ALLOWED_HOSTS` is set, and the HTTP transport has no authentication of its
+own. Expose it beyond localhost only behind something that provides that.
+
 ## Available Tools
 
 ### Entities
